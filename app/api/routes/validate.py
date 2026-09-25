@@ -18,7 +18,10 @@ async def run_validate(file: UploadFile = File(...)):
     Accepts a multipart upload named ``file``. Checks magic bytes against
     the declared type, then structurally opens the file (PDF via PyMuPDF,
     images via Pillow, ZIP/DOCX/XLSX via zipfile) so truncation and CRC
-    failures are caught. Returns {"success", "data": {valid, reason, file_type}}.
+    failures are caught. Structurally sound files are additionally screened for
+    cropping (edge-ink analysis for images, content-overflow for PDFs).
+    Returns ``{"success", "data": {valid, reason, file_type, cropped,
+    crop_reason, crop_score}}``.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="A file is required")

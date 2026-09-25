@@ -23,6 +23,8 @@ except ImportError:  # pragma: no cover - older installs
     import fitz  # type: ignore
 from PIL import Image
 
+from app.services.crop_detection import detect_crop
+
 MAGIC_PDF = b"%PDF-"
 MAGIC_JPEG = b"\xff\xd8\xff"
 MAGIC_PNG = b"\x89PNG\r\n\x1a\n"
@@ -144,50 +146,73 @@ def parse_zip(file_path: str, ext: str) -> tuple[bool, str | None, str]:
         return False, f"ZIP archive cannot be read: {exc}", "zip"
 
 
+def _result(valid: bool, reason: str | None, file_type: str | None, file_path: str) -> dict:
+    """Build the /validate payload, appending the crop verdict.
+
+    Crop detection only runs for structurally sound files — a corrupt document
+    has no meaningful frame to measure, so the corruption verdict is reported
+    on its own and the crop fields are neutral.
+    """
+    if valid:
+        crop = detect_crop(file_path, file_type)
+    else:
+        crop = {"cropped": False, "reason": None, "score": 0.0}
+    return {
+        "valid": valid,
+        "reason": reason,
+        "file_type": file_type,
+        "cropped": crop["cropped"],
+        "crop_reason": crop["reason"],
+        "crop_score": crop["score"],
+    }
+
+
 def validate(file_path: str, filename: str | None = None) -> dict:
-    """Return {valid, reason, file_type} for the given file."""
+    """Return {valid, reason, file_type, cropped, crop_reason, crop_score}."""
     filename = filename or Path(file_path).name
     ext = Path(filename).suffix.lower()
 
     if not Path(file_path).exists() or Path(file_path).stat().st_size == 0:
-        return {"valid": False, "reason": "File is empty or missing", "file_type": None}
+        return _result(False, "File is empty or missing", None, file_path)
 
     detected = sniff(file_path)
 
     # Renamed-file guard: a file whose declared extension contradicts its
     # actual content is a red flag even if the bytes parse cleanly.
     if detected and ext not in EXPECTED_EXTENSIONS.get(detected, {}):
-        return {
-            "valid": False,
-            "reason": f"File type mismatch: declared '{ext}' but content is {detected.upper()}",
-            "file_type": detected,
-        }
+        return _result(
+            False,
+            f"File type mismatch: declared '{ext}' but content is {detected.upper()}",
+            detected,
+            file_path,
+        )
 
     if detected == "pdf":
         ok, reason = parse_pdf(file_path)
-        return {"valid": ok, "reason": reason, "file_type": "pdf"}
+        return _result(ok, reason, "pdf", file_path)
     if detected in ("jpeg", "png"):
         ok, reason = parse_image(file_path)
-        return {"valid": ok, "reason": reason, "file_type": detected}
+        return _result(ok, reason, detected, file_path)
     if detected == "zip":
         ok, reason, file_type = parse_zip(file_path, ext)
-        return {"valid": ok, "reason": reason, "file_type": file_type}
+        return _result(ok, reason, file_type, file_path)
     if detected == "ole2":
         # Old binary Office (.doc/.xls/.ppt) — magic matches; no cheap deep
         # parse in stdlib/Pillow, so accept on signature alone.
-        return {"valid": True, "reason": None, "file_type": "ole2"}
+        return _result(True, None, "ole2", file_path)
     if detected == "text":
-        return {"valid": True, "reason": None, "file_type": "text"}
+        return _result(True, None, "text", file_path)
 
     # Unknown magic: Pillow fallback for any image-looking extension.
     if ext in IMAGE_EXTENSIONS:
         ok, reason = parse_image(file_path)
         if ok:
-            return {"valid": True, "reason": None, "file_type": "image"}
-        return {"valid": False, "reason": reason, "file_type": "image"}
+            return _result(True, None, "image", file_path)
+        return _result(False, reason, "image", file_path)
 
-    return {
-        "valid": False,
-        "reason": "Unrecognized file type (expected PDF, JPEG, PNG, ZIP/DOCX/XLSX, Office or text)",
-        "file_type": None,
-    }
+    return _result(
+        False,
+        "Unrecognized file type (expected PDF, JPEG, PNG, ZIP/DOCX/XLSX, Office or text)",
+        None,
+        file_path,
+    )

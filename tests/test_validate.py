@@ -26,7 +26,13 @@ def test_valid_text_file_accepted():
         headers=HEADERS,
     )
     assert resp.status_code == 200
-    assert resp.json()["data"] == {"valid": True, "reason": None, "file_type": "text"}
+    data = resp.json()["data"]
+    # The corruption verdict is the contract; crop fields ride along additively.
+    assert data["valid"] is True
+    assert data["reason"] is None
+    assert data["file_type"] == "text"
+    # Text formats have no page/frame to measure, so they are never cropped.
+    assert data["cropped"] is False
 
 
 def test_valid_png_accepted():

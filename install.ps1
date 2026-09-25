@@ -67,7 +67,7 @@ TESSERACT OCR (needed for the OCR/matching milestones, not for this scaffold)
 
 Write-Host "`nStart the service with:" -ForegroundColor Cyan
 Write-Host "    .\venv\Scripts\activate" -ForegroundColor White
-Write-Host "    uvicorn app:app --port 5001" -ForegroundColor White
+Write-Host "    uvicorn app.main:app --port 5001" -ForegroundColor White
 Write-Host "`nSmoke test:  Invoke-RestMethod http://localhost:5001/health" -ForegroundColor White
 
 Write-Host "`nSetup complete." -ForegroundColor Green

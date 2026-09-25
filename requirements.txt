@@ -7,3 +7,7 @@ rapidfuzz
 python-multipart
 pydantic
 pydantic-settings
+
+# --- dev / test ---
+pytest
+httpx

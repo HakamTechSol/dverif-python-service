@@ -155,7 +155,20 @@ def resolve_document_type(document_type: str | None) -> str:
     key = _normalize_key(str(document_type))
     if key in DOCUMENT_TYPE_SCHEMAS:
         return key
-    return DOCUMENT_TYPE_ALIASES.get(key, "generic")
+    resolved = DOCUMENT_TYPE_ALIASES.get(key)
+    if resolved:
+        return resolved
+    # A caller may hand back a canonical key that was resolved earlier (that is
+    # exactly what a cached field map carries). `_normalize_key` turns the
+    # underscores back into spaces, so retry in the schema's own spelling before
+    # giving up -- otherwise re-resolving a cache would silently degrade a typed
+    # document to the generic schema and change which fields are REQUIRED.
+    underscored = key.replace(" ", "_")
+    if underscored in DOCUMENT_TYPE_SCHEMAS:
+        return underscored
+    if key == "generic":
+        return "generic"
+    return "generic"
 
 
 def get_schema(document_type: str | None) -> tuple[str, dict[str, bool]]:

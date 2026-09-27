@@ -19,15 +19,24 @@ def run_ocr_extract(
 ):
     """Extract the canonical identity fields buried inside a document.
 
-    Accepts a multipart upload named ``file`` (PDF or image) and an optional
+    Accepts a multipart upload named ``file`` and an optional
     ``document_type`` form field that selects the field schema (see
     app.core.document_schemas; omitted/unknown types use the generic schema).
-    Renders the PDF to an image and runs Tesseract, then pulls each schema
-    field via label heuristics. Returns
-    {"success", "data": {document_type, fields}} where every field carries
+    The reader is chosen from the file's real content type, not its extension:
+    a PDF is rendered and run through Tesseract, a raster image is OCR'd
+    directly, and a DOCX — which is a live document, not a scan — has its text
+    read straight out of word/document.xml with python-docx. All three then feed
+    the SAME canonical extractor, which is why a DOCX reference and a PDF
+    submission of one document produce comparable field maps.
+
+    This is the single extraction entry point: the backend calls it for a
+    verification-request upload AND, at upload time, for an employee reference
+    document whose fields it then caches for later matching. Returns
+    ``{"success", "data": {document_type, fields}}`` where every field carries
     {value, confidence} and unextracted required fields are marked
     "not_visible".
     """
+
     if not file.filename:
         raise HTTPException(status_code=400, detail="A file is required")
 

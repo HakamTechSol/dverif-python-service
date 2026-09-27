@@ -119,10 +119,16 @@ def test_validate_endpoint_reports_cropped_image():
     )
     assert resp.status_code == 200
     data = resp.json()["data"]
-    # Structurally fine, but rejected for quality at the caller's discretion.
-    assert data["valid"] is True
+    # Structurally fine — it parses, it is just missing part of its own content.
+    # That is a HEURISTIC verdict, not a structural one, so `valid` is false but
+    # `check_type` tells a caller it may be a false positive and only deserves a
+    # warning, not a hard block.
+    assert data["check_type"] == "heuristic"
+    assert data["valid"] is False
     assert data["cropped"] is True
     assert data["crop_reason"]
+    # `reason` carries the same message so there is one string to store/show.
+    assert data["reason"] == data["crop_reason"]
 
 
 def test_validate_endpoint_reports_clean_image():
@@ -132,4 +138,9 @@ def test_validate_endpoint_reports_clean_image():
         headers=HEADERS,
     )
     assert resp.status_code == 200
-    assert resp.json()["data"]["cropped"] is False
+    data = resp.json()["data"]
+    assert data["cropped"] is False
+    # A clean pass is reported as structural: the hard checks ran and found
+    # nothing. The tier is always one of the two values, never absent.
+    assert data["valid"] is True
+    assert data["check_type"] == "structural"

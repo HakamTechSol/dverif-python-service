@@ -4,7 +4,9 @@ OCR text extraction + canonical identity-field extraction for Dvarif.
 Pipeline:
   extractText(file)      PDF -> render to image (150 DPI, try page 1, fall
                          back to highest-text-density page) -> Tesseract OCR;
-                         images are OCR'd directly.
+                         images (JPEG/PNG/WEBP/...) are OCR'd directly;
+                         DOCX is NOT a scan, so its text is read straight out of
+                         the document XML instead of being OCR'd.
   extractFields(t, type) schema-driven extraction (see
                          app.core.document_schemas): every schema field is
                          returned with a canonical snake_case name (name, cnic,
@@ -16,6 +18,7 @@ Pipeline:
 
 import os
 import re
+import zipfile
 from datetime import datetime
 
 try:
@@ -27,6 +30,23 @@ from PIL import Image
 
 from app.core.document_schemas import get_schema
 from app.services.validation_service import sniff
+
+# A DOCX is a ZIP package whose body text lives in word/document.xml. python-docx
+# is the supported reader; the raw-XML fallback below keeps extraction working if
+# it is ever unavailable, because a DOCX that yields no text is worse than a
+# slower one (every identity field comes back "not_visible" and auto-verification
+# silently fails).
+try:
+    import docx as python_docx  # type: ignore
+except Exception:  # pragma: no cover - optional at runtime
+    python_docx = None
+
+DOCX_WML_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+DOCX_PARAGRAPH = f"{DOCX_WML_NS}p"
+DOCX_TEXT_NODE = f"{DOCX_WML_NS}t"
+DOCX_TAB = f"{DOCX_WML_NS}tab"
+DOCX_BREAK = f"{DOCX_WML_NS}br"
+
 
 # --- Tesseract binary resolution -------------------------------------------
 
@@ -117,14 +137,80 @@ def _extract_image_text(file_path: str) -> str:
         return _ocr_image(image.convert("RGB"))
 
 
+def _docx_text_via_xml(file_path: str) -> str:
+    """Read word/document.xml directly, one output line per paragraph.
+
+    Fallback for when python-docx is unavailable. Preserves paragraph breaks
+    because the field extractors are line-oriented (they look for a label and
+    then the value on the same or the next line).
+    """
+    import xml.etree.ElementTree as ET
+
+    with zipfile.ZipFile(file_path) as archive:
+        with archive.open("word/document.xml") as handle:
+            root = ET.parse(handle).getroot()
+
+    lines: list[str] = []
+    for paragraph in root.iter(DOCX_PARAGRAPH):
+        parts: list[str] = []
+        for node in paragraph.iter():
+            if node.tag == DOCX_TEXT_NODE and node.text:
+                parts.append(node.text)
+            elif node.tag == DOCX_TAB:
+                parts.append(" ")
+            elif node.tag == DOCX_BREAK:
+                parts.append(" ")
+        text = "".join(parts).strip()
+        if text:
+            lines.append(text)
+    return "\n".join(lines)
+
+
+def _extract_docx_text(file_path: str) -> str:
+    """Extract a DOCX's text directly -- never via the image/OCR path.
+
+    A DOCX is a live, reflowable document, not a scan: there is no image to
+    rasterise and running Tesseract over one would be both meaningless and slow.
+    The returned plain text feeds the exact same extractFields() used for OCR
+    output, so canonical fields (name, CNIC, dates, ...) resolve identically.
+    """
+    if python_docx is not None:
+        try:
+            document = python_docx.Document(file_path)
+            lines = [p.text.strip() for p in document.paragraphs if p.text and p.text.strip()]
+            text = "\n".join(lines)
+            if text.strip():
+                return text
+        except Exception:
+            # Fall through to the raw-XML reader rather than losing the document.
+            pass
+    return _docx_text_via_xml(file_path)
+
+
 def extractText(file_path: str) -> str:
-    """Return raw OCR text for a PDF or image file ('' when not OCR-able)."""
+    """Return the document's text ('' when it carries none).
+
+    PDFs and raster images go through OCR; DOCX text is read directly. Other
+    sniffed types (xlsx/zip/ole2/text) return '' as before.
+    """
     detected = sniff(file_path)
     if detected == "pdf":
         return _extract_pdf_text(file_path)
     if detected in ("jpeg", "png") or detected == "image":
         return _extract_image_text(file_path)
+    if _is_docx(file_path):
+        return _extract_docx_text(file_path)
     return ""
+
+
+def _is_docx(file_path: str) -> bool:
+    """True for a DOCX package (ZIP containing the WordprocessingML part)."""
+    try:
+        with zipfile.ZipFile(file_path) as archive:
+            return "word/document.xml" in archive.namelist()
+    except Exception:
+        return False
+
 
 # --- Label vocabulary --------------------------------------------------------
 

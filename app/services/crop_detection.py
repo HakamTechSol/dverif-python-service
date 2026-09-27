@@ -59,6 +59,43 @@ BORDER_INK_RATIO = 0.02
 # its border). Below this we report "not cropped" rather than guessing.
 MIN_IMAGE_EDGE = 100
 
+# --- Readability pre-checks -------------------------------------------------
+#
+# Edge-ink detection assumes the page is a bright sheet of paper with a white
+# margin. That assumption breaks on an under-exposed or low-contrast capture,
+# and when it breaks the verdict is not merely imprecise -- it is actively
+# misleading: every border pixel counts as "ink", all four edges tie at 100%,
+# and the detector names whichever edge happened to come first in the dict
+# ("Content runs off the top edge...") when the truth is that the image contains
+# no paper-white at all. So these checks run FIRST and name the real cause.
+#
+# Thresholds are set from measured baselines rather than guessed:
+#
+#   case                        mean    % pixels >= 235   max
+#   under-exposed capture       114.7          0.0%         214
+#   synthetic clean scan       251.9         98.8%         255
+#   photo of a page            237.0         99.2%         238
+#   genuinely cropped scan     246.5         96.7%         255
+#
+# The clean separation is that a real scan is ~97-99% paper while the unusable
+# capture has NO pixel that reaches paper white, so the tests below key on paper
+# coverage rather than on mean brightness (a dark cover, a coloured form or a
+# shadowed desk can drag the mean down on an otherwise fine page).
+
+# A pixel counts as paper at this level. Office paper sits at ~250, so anything
+# that never reaches it is not a photograph of paper.
+PAPER_LEVEL = 235
+
+# Fraction of the frame that must be paper. A dense text page is ~20-25% ink and
+# a heavy form/table ~50%, so even the worst legitimate document keeps well over
+# half the frame as paper.
+MIN_PAPER_FRACTION = 0.35
+
+# Last-resort net for a dim capture that still has some paper but is globally
+# murky. Set below the measured under-exposed mean (114) so the specific paper
+# checks above report first.
+MIN_MEAN_BRIGHTNESS = 90
+
 # --- PDF tuning ---------------------------------------------------------------
 
 # Content may exceed the page rect by this much (points) before it counts as
@@ -80,6 +117,60 @@ def _ink_ratio(pixels, threshold: int) -> float:
     return dark / len(pixels)
 
 
+def _readability_problem(gray) -> dict | None:
+    """Describe why an image is unreadable, or None when it looks like paper.
+
+    This exists to stop the edge-ink test from blaming a random edge. A frame
+    that is under-exposed produces 100% "ink" on all four borders purely because
+    no pixel is bright enough to count as paper, so the crop test would report
+    an arbitrary edge ("the top edge") and send the user off to re-crop a
+    document that was never cropped. Naming the real cause ("no bright paper
+    anywhere -- this is a lighting problem") tells them what to actually fix.
+
+    Statistics come from the 256-bin histogram rather than getdata(), which is
+    deprecated in Pillow 14 and would also walk every pixel in Python.
+    """
+    histogram = gray.histogram()
+    total = sum(histogram)
+    if not total:
+        return None
+
+    paper = sum(histogram[ PAPER_LEVEL:]) / total
+    mean = sum(value * count for value, count in enumerate(histogram)) / total
+    brightest = max((i for i, count in enumerate(histogram) if count), default=0)
+
+    if paper < MIN_PAPER_FRACTION:
+        # Distinguish "not a photograph of paper at all" from "a page that is
+        # simply very dark", because the fixes differ and so does the evidence.
+        if brightest < PAPER_LEVEL:
+            reason = (
+                "The scan is under-exposed: no pixel in the image is bright enough to be "
+                f"paper (brightest pixel {brightest}/255), so the whole frame reads as ink. "
+                "This is a lighting problem, not a cropped page — re-scan in better light "
+                "on a plain, light background."
+            )
+        else:
+            reason = (
+                f"The scan is too dark to read reliably (only {paper:.0%} of it is paper, "
+                f"average brightness {mean:.0f}/255) — re-scan in better light, or place "
+                "the document on a plain light background."
+            )
+        # Score the darkness itself, so the number still means "how far from
+        # acceptable" rather than an uninformative 1.0.
+        return {"cropped": True, "reason": reason, "score": round(1.0 - paper, 4)}
+
+    if mean < MIN_MEAN_BRIGHTNESS:
+        return {
+            "cropped": True,
+            "reason": (
+                f"The scan is too dark to read reliably (average brightness "
+                f"{mean:.0f}/255) — re-scan in better light or on a lighter background."
+            ),
+            "score": round(1.0 - (mean / 255.0), 4),
+        }
+    return None
+
+
 def detect_crop_image(file_path: str) -> dict:
     """Edge-ink crop detection for a raster document image."""
     try:
@@ -94,6 +185,12 @@ def detect_crop_image(file_path: str) -> dict:
 
     if width < MIN_IMAGE_EDGE or height < MIN_IMAGE_EDGE:
         return dict(NOT_CROPPED)
+
+    # Explain a too-dark frame before measuring it, otherwise every edge reads as
+    # 100% ink and the verdict blames an arbitrary one.
+    unreadable = _readability_problem(gray)
+    if unreadable is not None:
+        return unreadable
 
     band = min(BORDER_PX, max(1, min(width, height) // 10))
     px = gray.load()
@@ -120,7 +217,12 @@ def detect_crop_image(file_path: str) -> dict:
         "right": _ink_ratio(right, INK_THRESHOLD),
     }
     # The worst edge decides: one badly cut edge is enough to lose information.
-    worst_edge, score = max(edge_ratios.items(), key=lambda kv: kv[1])
+    # The edge order is explicit so a tie is reported deterministically instead of
+    # silently falling through to dict insertion order (which is what made a
+    # uniformly dark frame get reported as a "top edge" problem).
+    order = ("top", "bottom", "left", "right")
+    worst_edge = max(order, key=lambda edge: edge_ratios[edge])
+    score = edge_ratios[worst_edge]
 
     if score < BORDER_INK_RATIO:
         return dict(NOT_CROPPED)
@@ -226,8 +328,13 @@ def detect_crop_pdf(file_path: str) -> dict:
 def detect_crop(file_path: str, file_type: str | None) -> dict:
     """Run the crop detector appropriate for `file_type`.
 
-    `file_type` is the sniffed type from validation_service (pdf/jpeg/png/...),
+    `file_type` is the sniffed type from validation_service (pdf/jpeg/png/docx/...),
     not the filename extension, so a renamed file is routed correctly.
+
+    Only formats with a physical page frame can be "cropped". A DOCX/XLSX/PPTX
+    or a plain-text file is reflowable by definition -- it has no page edge to cut
+    through -- so it is explicitly reported as not cropped rather than falling
+    through to the default branch.
     """
     try:
         if file_type == "pdf":

@@ -16,12 +16,16 @@ async def run_validate(file: UploadFile = File(...)):
     """Validate an uploaded file for corruption.
 
     Accepts a multipart upload named ``file``. Checks magic bytes against
-    the declared type, then structurally opens the file (PDF via PyMuPDF,
-    images via Pillow, ZIP/DOCX/XLSX via zipfile) so truncation and CRC
-    failures are caught. Structurally sound files are additionally screened for
-    cropping (edge-ink analysis for images, content-overflow for PDFs).
-    Returns ``{"success", "data": {valid, reason, file_type, cropped,
-    crop_reason, crop_score}}``.
+    the declared type AND the declared mimetype, then structurally opens the
+    file (PDF via PyMuPDF, images via Pillow, ZIP/DOCX/XLSX via zipfile) so
+    truncation and CRC failures are caught. Structurally sound files are
+    additionally screened for cropping (edge-ink analysis for images,
+    content-overflow for PDFs).
+
+    Returns ``{"success", "data": {valid, reason, file_type, check_type,
+    cropped, crop_reason, crop_score}}``. ``check_type`` is ``"structural"`` for
+    a hard parse/mimetype failure and for a clean pass, and ``"heuristic"`` when
+    a quality signal is what made the file invalid.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="A file is required")
@@ -29,7 +33,7 @@ async def run_validate(file: UploadFile = File(...)):
     tmp_path = None
     try:
         tmp_path = _persist_upload(file)
-        result = validate_file(tmp_path, file.filename)
+        result = validate_file(tmp_path, file.filename, file.content_type)
         return {"success": True, "data": result}
     finally:
         if tmp_path and os.path.exists(tmp_path):

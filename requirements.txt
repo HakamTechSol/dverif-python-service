@@ -3,6 +3,7 @@ uvicorn[standard]
 pytesseract
 Pillow
 PyMuPDF
+python-docx
 rapidfuzz
 python-multipart
 pydantic

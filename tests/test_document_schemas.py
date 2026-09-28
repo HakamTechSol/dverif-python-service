@@ -165,10 +165,32 @@ def test_extract_offer_letter_canonical_names():
     result = extractFields(text, "offer_letter")
     assert result["document_type"] == "offer_letter"
     fields = result["fields"]
-    assert set(fields.keys()) == {"name", "designation", "joining_date"}
+    # `cnic` is declared on every schema: a CNIC printed on a letter must reach
+    # the comparison instead of being dropped at extraction. This text has none,
+    # so it is reported as not_visible.
+    assert set(fields.keys()) == {"name", "cnic", "designation", "joining_date"}
+    assert fields["cnic"] == nv()
     assert fields["name"] == h("Asim Khan")
     assert fields["designation"] == h("Software Engineer")
     assert fields["joining_date"] == h("2023-01-15")
+
+
+def test_a_cnic_printed_on_a_letter_is_actually_extracted():
+    # The reason `cnic` is declared on every schema: before, the text was read
+    # and the number was simply thrown away, so two letters carrying visibly
+    # different CNICs compared on their name alone.
+    text = "Employee Name: Asim Khan\nCNIC: 42101-1234567-1\nDesignation: Engineer\n"
+    fields = extractFields(text, "offer_letter")["fields"]
+    assert fields["cnic"] == h("4210112345671")
+
+
+def test_every_schema_declares_cnic():
+    # A schema without `cnic` is a schema in which a CNIC is invisible to the
+    # matcher. assert set(...) rather than a count so a newly added type cannot
+    # reintroduce the gap by omission.
+    for key, schema in DOCUMENT_TYPE_SCHEMAS.items():
+        assert "cnic" in schema, f"{key} does not declare cnic"
+    assert "cnic" in get_schema(None)[1]  # the generic fallback too
 
 
 def test_extract_optional_field_with_weak_label_is_low_confidence():
@@ -247,14 +269,30 @@ def test_match_rejects_different_names():
 
 
 def test_match_crosses_document_types_on_shared_fields():
-    schema_a = _schema("offer_letter")   # name, designation, joining_date
+    """A CNIC-copy reference and an offer-letter submission still share a field.
+
+    The cross-type aspect still works — `name` is compared across the two
+    schemas. What this test USED to assert, however, was the bug itself: that
+    the pair matched at 100.0, because the only shared field was `name` and the
+    CNIC the reference carried was dropped as an unshared key. A document showing
+    one person's CNIC must not be reported as a clean match against a document
+    showing no CNIC at all, so the CNIC is now compared on its own footing and
+    the pair is refused.
+    """
+    schema_a = _schema("offer_letter")   # name, cnic, designation, joining_date
     schema_b = _schema("cnic")           # name, cnic, dob
     a = {"name": h("Asim Khan"), "designation": h("Engineer"), "joining_date": nv()}
     b = {"name": h("Asim Khan"), "cnic": h("4210112345671"), "dob": h("1990-08-05")}
-    # Only 'name' is shared and required by both -> compared; others ignored.
+
     result = compareFields(a, b, schema_a, schema_b)
-    assert result["match"] is True
-    assert result["confidence"] == 100.0
+
+    # The shared, comparable field is still found and still scored.
+    assert any(reason.startswith("name matches") for reason in result["reasons"])
+    # ...but the unshared CNIC is no longer silently discarded.
+    assert result["identity_mismatch"] is True
+    assert result["auto_match_eligible"] is False
+    assert result["match"] is False
+    assert result["confidence"] < 100.0
 
 
 def test_match_no_comparable_fields():

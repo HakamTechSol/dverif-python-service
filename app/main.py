@@ -22,7 +22,7 @@ service is fail-closed: it returns 503 while the key is missing).
 import uvicorn
 from fastapi import FastAPI
 
-from app.api.routes import health, match, metrics, ocr, validate
+from app.api.routes import health, match, metrics, ocr, schemas, validate
 from app.core.config import settings
 from app.core.logging import init_logger
 from app.core.observability import observability
@@ -53,6 +53,8 @@ app.include_router(validate.router)
 app.include_router(ocr.router)
 app.include_router(match.router)
 app.include_router(metrics.router)
+# The document-type catalogue the backend pushes here (see app/core/document_schemas.py).
+app.include_router(schemas.router)
 
 
 if __name__ == "__main__":

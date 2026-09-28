@@ -64,7 +64,12 @@ def test_offer_letter_schema_via_short_form_label(fake_ocr):
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["document_type"] == "offer_letter"
-    assert set(data["fields"]) == {"name", "designation", "joining_date"}
+    # `cnic` is declared on every schema so a CNIC printed on a letter is
+    # extracted and compared rather than discarded. OFFER_TEXT carries none, so
+    # it is reported as not_visible -- which the comparison treats as "no
+    # evidence", not as a failure.
+    assert set(data["fields"]) == {"name", "cnic", "designation", "joining_date"}
+    assert data["fields"]["cnic"] == {"value": None, "confidence": "not_visible"}
     assert data["fields"]["name"] == {"value": "Asim Khan", "confidence": "high"}
     assert data["fields"]["designation"] == {
         "value": "Software Engineer",

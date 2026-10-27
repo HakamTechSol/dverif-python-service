@@ -64,8 +64,17 @@ DOCUMENT_TYPE_SCHEMAS: dict[str, dict[str, bool]] = {
     "experience_letter": {"name": True, "cnic": False, "designation": False, "duration": False},
     "reference_letter": {"name": True, "cnic": False, "recommendation_date": False},
 
-    # Career / education records.
-    "resume": {"name": True, "cnic": False, "designation": False},
+    # Career / education records. A CV usually prints its owner's name, email
+    # and phone as an unlabelled header rather than as "Name: ..." fields, so
+    # those three are declared explicitly and extracted by position as well as
+    # by label (see ocr_service._extract_resume_name).
+    "resume": {
+        "name": True,
+        "cnic": False,
+        "designation": False,
+        "email": False,
+        "phone": False,
+    },
     "application_form": {"name": True, "cnic": False, "dob": False},
     "education_certificate": {"name": True, "cnic": False, "degree": False, "session": False},
     "transcript": {"name": True, "cnic": False, "degree": False, "session": False},

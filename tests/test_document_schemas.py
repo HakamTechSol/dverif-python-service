@@ -193,6 +193,46 @@ def test_every_schema_declares_cnic():
     assert "cnic" in get_schema(None)[1]  # the generic fallback too
 
 
+def test_extract_resume_reads_unlabelled_header_fields():
+    text = (
+        "AYESHA SIDDIQUI\n"
+        "Technology Educator | Digital Marketing Professional\n"
+        "Karachi, Pakistan +92 322 1315218 | ayesha@example.com\n"
+        "\n"
+        "PROFESSIONAL SUMMARY\n"
+        "Experienced trainer and software professional.\n"
+    )
+    fields = extractFields(text, "resume")["fields"]
+
+    assert set(fields.keys()) == {"name", "cnic", "designation", "email", "phone"}
+    assert fields["name"] == h("AYESHA SIDDIQUI")
+    assert fields["email"] == h("ayesha@example.com")
+    assert fields["phone"] == h("+92 322 1315218")
+    assert fields["cnic"] == nv()
+
+
+def test_extract_resume_skips_a_cv_heading_before_the_name():
+    text = "CURRICULUM VITAE\nAyesha Siddiqui\nKarachi, Pakistan\n"
+    fields = extractFields(text, "resume")["fields"]
+
+    assert fields["name"] == low("Ayesha Siddiqui")
+
+
+def test_extract_resume_label_beats_the_header_name():
+    text = "CURRICULUM VITAE\nAyesha Siddiqui\nName: Bilal Ahmed\n"
+    fields = extractFields(text, "resume")["fields"]
+
+    assert fields["name"] == h("Bilal Ahmed")
+
+
+def test_extract_resume_does_not_treat_a_cnic_as_a_phone():
+    text = "AYESHA SIDDIQUI\nCNIC: 42101-1234567-1\n"
+    fields = extractFields(text, "resume")["fields"]
+
+    assert fields["cnic"] == h("4210112345671")
+    assert fields["phone"] == nv()
+
+
 def test_extract_optional_field_with_weak_label_is_low_confidence():
     result = extractFields("Name: Asim Khan\nDesignation:\nEngineer", "offer_letter")
     # Designation label line is empty; the value is probed from the following

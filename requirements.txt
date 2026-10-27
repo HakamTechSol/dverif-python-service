@@ -9,6 +9,13 @@ python-multipart
 pydantic
 pydantic-settings
 
+# Laya decision engine (advisory document classification / risk signals).
+# Pulls in torch + transformers and downloads ~0.6-0.8GB of checkpoint weights
+# from HuggingFace on first use, so it is imported LAZILY by
+# app/services/laya_engine.py -- importing this file costs nothing at boot.
+# Disable the whole feature with LAYA_ENABLED=false.
+laya
+
 # --- dev / test ---
 pytest
 httpx

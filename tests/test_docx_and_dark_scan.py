@@ -15,11 +15,48 @@ from PIL import Image, ImageDraw
 
 from app.main import app
 from app.services.crop_detection import detect_crop, detect_crop_image
-from app.services.ocr_service import extractFields, extractText
+from app.services.ocr_service import _extract_phone, extractFields, extractText
+from app.services import ocr_service
 from app.services.validation_service import validate
 
 client = TestClient(app)
 HEADERS = {"X-API-Key": "test-api-key"}
+
+
+def test_resume_pdf_ocr_combines_first_four_pages(monkeypatch):
+    class FakePage:
+        def __init__(self, index):
+            self.index = index
+
+    class FakePdf:
+        page_count = 5
+
+        def __getitem__(self, index):
+            return FakePage(index)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ocr_service.fitz, "open", lambda _path: FakePdf())
+    monkeypatch.setattr(ocr_service, "_render_page", lambda page: page)
+    monkeypatch.setattr(ocr_service, "_ocr_image", lambda page: f"page {page.index}")
+
+    text = ocr_service._extract_pdf_text("resume.pdf", all_pages=True)
+
+    assert text == "page 0\npage 1\npage 2\npage 3"
+
+
+@pytest.mark.parametrize(
+    ("printed", "expected"),
+    [
+        ("+92 318 248 4396", "+92 318 248 4396"),
+        ("+92 309 2271214", "+92 309 2271214"),
+        ("0300-123-4567", "0300-123-4567"),
+        ("+92 (318) 248-4396", "+92 (318) 248-4396"),
+    ],
+)
+def test_resume_phone_extraction_accepts_common_digit_grouping(printed, expected):
+    assert _extract_phone(f"Contact: {printed}") == (expected, "high")
 
 
 # --- fixtures ---------------------------------------------------------------
@@ -196,6 +233,25 @@ def test_docx_feeds_the_same_canonical_field_extraction(tmp_path):
 def test_docx_cnic_is_extracted(tmp_path):
     path = _docx(tmp_path)
     fields = extractFields(extractText(str(path)))["fields"]
+    assert fields["cnic"]["value"] == "3520212345671"
+
+
+def test_resume_fields_in_docx_tables_are_extracted(tmp_path):
+    docx = pytest.importorskip("docx")
+    document = docx.Document()
+    table = document.add_table(rows=3, cols=2)
+    table.cell(0, 0).text = "Hunain Haider"
+    table.cell(0, 1).text = "hunain@example.com"
+    table.cell(1, 0).text = "Phone: 03001234567"
+    table.cell(2, 0).text = "CNIC: 35202-1234567-1"
+    path = tmp_path / "resume-table.docx"
+    document.save(str(path))
+
+    fields = extractFields(extractText(str(path)), "resume")["fields"]
+
+    assert fields["name"]["value"] == "Hunain Haider"
+    assert fields["email"]["value"] == "hunain@example.com"
+    assert fields["phone"]["value"] == "03001234567"
     assert fields["cnic"]["value"] == "3520212345671"
 
 
